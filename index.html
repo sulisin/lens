@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>透鏡成像教學模擬 (Lens Imaging Simulation)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #f8fafc;
+            font-family: 'Inter', sans-serif;
+            touch-action: none;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            cursor: grab;
+        }
+        canvas:active {
+            cursor: grabbing;
+        }
+    </style>
+</head>
+<body class="flex flex-col h-screen">
+
+    <!-- Top Control Bar -->
+    <div class="bg-white z-10 p-4 shrink-0 shadow-md flex flex-col xl:flex-row gap-4 justify-between items-center relative">
+        
+        <!-- Lens & Infinity Toggle -->
+        <div class="flex gap-2 items-center">
+            <div class="flex bg-gray-100 p-1 rounded-lg border border-gray-200">
+                <button id="btn-convex" class="px-5 py-2 rounded-md font-bold transition-all bg-blue-600 text-white shadow-sm">
+                    凸透鏡 (Convex)
+                </button>
+                <button id="btn-concave" class="px-5 py-2 rounded-md font-bold text-gray-600 hover:bg-gray-200 transition-all">
+                    凹透鏡 (Concave)
+                </button>
+            </div>
+            <button id="btn-infinity" class="px-4 py-2 rounded-md font-bold text-gray-600 hover:bg-gray-200 transition-all border border-gray-200 whitespace-nowrap">
+                物在無窮遠 (平行光)
+            </button>
+        </div>
+
+        <!-- Dashboard Stats -->
+        <div class="flex-grow flex justify-center w-full xl:w-auto">
+            <div class="bg-blue-50 border border-blue-100 rounded-lg p-3 px-4 flex flex-wrap gap-x-6 gap-y-3 text-sm justify-center items-center shadow-inner">
+                
+                <div class="flex flex-col items-center min-w-[80px]">
+                    <span class="text-blue-700 text-xs font-semibold mb-1">物的位置</span>
+                    <span id="stat-obj-pos" class="font-bold text-gray-800 bg-white px-2 py-1 rounded shadow-sm">2F 外</span>
+                </div>
+                
+                <div class="flex flex-col items-center min-w-[80px]">
+                    <span class="text-blue-700 text-xs font-semibold mb-1">像的位置</span>
+                    <span id="stat-img-pos" class="font-bold text-gray-800 bg-white px-2 py-1 rounded shadow-sm">F 與 2F 間</span>
+                </div>
+
+                <div class="hidden md:block w-px h-10 bg-blue-200 mx-2"></div>
+                
+                <div class="flex flex-col items-center">
+                    <span class="text-gray-500 text-xs mb-1">成像性質</span>
+                    <div class="flex gap-1">
+                        <span id="stat-erect" class="px-2 py-0.5 rounded text-xs font-bold bg-amber-100 text-amber-700">倒立</span>
+                        <span id="stat-mag" class="px-2 py-0.5 rounded text-xs font-bold bg-indigo-100 text-indigo-700">縮小</span>
+                        <span id="stat-real" class="px-2 py-0.5 rounded text-xs font-bold bg-rose-100 text-rose-700">實像</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Image Upload -->
+        <div class="flex items-center gap-2">
+            <label for="image-upload" class="cursor-pointer bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-md font-bold transition-all text-sm shadow-sm flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                </svg>
+                自訂物體圖片
+            </label>
+            <input type="file" id="image-upload" accept="image/png, image/jpeg, image/webp" class="hidden">
+            <button id="btn-reset-img" class="hidden text-gray-400 hover:text-red-500 text-xs underline font-bold px-2">重置</button>
+        </div>
+    </div>
+
+    <!-- Instructions overlay -->
+    <div class="absolute top-28 left-4 z-10 pointer-events-none">
+        <div class="bg-white/90 backdrop-blur text-gray-700 p-4 rounded-xl text-sm shadow-lg border border-gray-100">
+            <p class="font-bold text-blue-600 mb-2">💡 操作教學：</p>
+            <ul class="list-disc pl-5 space-y-1">
+                <li>在軸上<b>左右拖曳</b>左側的物體。</li>
+                <li>放開滑鼠後，會自動播放<b>光路動畫</b>。</li>
+                <li><span class="text-rose-600 font-bold">實像</span> 為 100% 不透明。</li>
+                <li><span class="text-purple-600 font-bold">虛像</span> 為 50% 半透明。</li>
+            </ul>
+        </div>
+    </div>
+
+    <!-- Physics Canvas -->
+    <div class="flex-grow relative w-full h-full" id="canvas-container">
+        <canvas id="sim-canvas"></canvas>
+    </div>
+
+    <script>
+        // --- State Variables ---
+        let lensType = 'convex'; // 'convex' or 'concave'
+        let isInfinity = false; // Is the object at infinity?
+        const FOCAL_LENGTH = 150; // Absolute focal length in pixels
+        let do_px = 350; // Initial object distance
+        const objectHeight = 80; 
+        let uploadedImage = null;
+        let imgAspectRatio = 1;
+        
+        let isDragging = false;
+        
+        // Animation State
+        // animTime progresses from 0 to 3. 
+        // 0-1: Ray 1, 1-2: Ray 2, 2-3: Image Fade In
+        let animState = 'DONE'; // 'DRAGGING', 'ANIMATING', 'DONE'
+        let animTime = 3.0; 
+        const ANIM_SPEED = 0.015; 
+
+        // --- DOM Elements ---
+        const canvas = document.getElementById('sim-canvas');
+        const ctx = canvas.getContext('2d');
+        const container = document.getElementById('canvas-container');
+        
+        const btnConvex = document.getElementById('btn-convex');
+        const btnConcave = document.getElementById('btn-concave');
+        const btnInfinity = document.getElementById('btn-infinity');
+        const fileInput = document.getElementById('image-upload');
+        const btnResetImg = document.getElementById('btn-reset-img');
+
+        // --- Resize & Loop Setup ---
+        function resize() {
+            canvas.width = container.clientWidth;
+            canvas.height = container.clientHeight;
+            drawFrame(); // Force draw on resize
+        }
+        window.addEventListener('resize', resize);
+
+        // --- Event Listeners ---
+        function updateInfinityBtn() {
+            if (isInfinity) {
+                btnInfinity.className = "px-4 py-2 rounded-md font-bold transition-all bg-indigo-600 text-white shadow-sm whitespace-nowrap border border-transparent";
+            } else {
+                btnInfinity.className = "px-4 py-2 rounded-md font-bold text-gray-600 hover:bg-gray-200 transition-all border border-gray-200 whitespace-nowrap";
+            }
+        }
+
+        btnConvex.addEventListener('click', () => {
+            if(lensType === 'convex') return;
+            lensType = 'convex';
+            btnConvex.className = "px-5 py-2 rounded-md font-bold transition-all bg-blue-600 text-white shadow-sm";
+            btnConcave.className = "px-5 py-2 rounded-md font-bold text-gray-600 hover:bg-gray-200 transition-all";
+            triggerAnimation();
+        });
+
+        btnConcave.addEventListener('click', () => {
+            if(lensType === 'concave') return;
+            lensType = 'concave';
+            btnConcave.className = "px-5 py-2 rounded-md font-bold transition-all bg-blue-600 text-white shadow-sm";
+            btnConvex.className = "px-5 py-2 rounded-md font-bold text-gray-600 hover:bg-gray-200 transition-all";
+            triggerAnimation();
+        });
+
+        btnInfinity.addEventListener('click', () => {
+            isInfinity = !isInfinity;
+            updateInfinityBtn();
+            triggerAnimation();
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        uploadedImage = img;
+                        imgAspectRatio = img.width / img.height;
+                        btnResetImg.classList.remove('hidden');
+                        triggerAnimation();
+                    };
+                    img.src = event.target.result;
+                };
+                reader.readAsDataURL(file);
+            }
+        });
+
+        btnResetImg.addEventListener('click', () => {
+            uploadedImage = null;
+            fileInput.value = '';
+            btnResetImg.classList.add('hidden');
+            triggerAnimation();
+        });
+
+        function triggerAnimation() {
+            animState = 'ANIMATING';
+            animTime = 0.0;
+        }
+
+        // --- Mouse/Touch Interaction ---
+        function getClientX(e) { return e.touches ? e.touches[0].clientX : e.clientX; }
+
+        function handlePointerDown(e) {
+            if (isInfinity) return; // Disable dragging in infinity mode
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = getClientX(e) - rect.left;
+            const cx = canvas.width / 2;
+            const objectScreenX = cx - do_px;
+            
+            if (Math.abs(mouseX - objectScreenX) < 50) {
+                isDragging = true;
+                animState = 'DRAGGING';
+                animTime = 0; // Hide rays/image while dragging
+            }
+        }
+
+        function handlePointerMove(e) {
+            if (!isDragging) return;
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = getClientX(e) - rect.left;
+            const cx = canvas.width / 2;
+            
+            let newDo = cx - mouseX;
+            newDo = Math.max(10, Math.min(newDo, cx - 40)); 
+            
+            // Snap gently to focal points for precision
+            if (Math.abs(newDo - FOCAL_LENGTH) < 8) newDo = FOCAL_LENGTH;
+            if (Math.abs(newDo - FOCAL_LENGTH*2) < 8) newDo = FOCAL_LENGTH*2;
+            
+            do_px = newDo;
+        }
+
+        function handlePointerUp() {
+            if (isDragging) {
+                isDragging = false;
+                triggerAnimation(); // Start animation on drop
+            }
+        }
+
+        canvas.addEventListener('mousedown', handlePointerDown);
+        window.addEventListener('mousemove', handlePointerMove);
+        window.addEventListener('mouseup', handlePointerUp);
+        
+        canvas.addEventListener('touchstart', handlePointerDown, {passive: true});
+        window.addEventListener('touchmove', handlePointerMove, {passive: true});
+        window.addEventListener('touchend', handlePointerUp);
+
+        // --- Optics & Text Logic ---
+        function calculateOptics() {
+            const f = lensType === 'convex' ? FOCAL_LENGTH : -FOCAL_LENGTH;
+            if (isInfinity) {
+                return { f, di: f, m: 0 };
+            }
+
+            let calc_do = do_px;
+            
+            let di, m;
+            if (Math.abs(calc_do - FOCAL_LENGTH) < 0.1) {
+                di = Infinity;
+                m = Infinity;
+            } else {
+                di = (f * calc_do) / (calc_do - f);
+                m = -di / calc_do;
+            }
+            return { f, di, m };
+        }
+
+        function getPositionTexts(do_px, di_px, lens) {
+            if (isInfinity) return { objPos: "無窮遠", imgPos: "焦點 (F) 上" };
+
+            const eps = 2;
+            let objPos = "";
+            let imgPos = "";
+            
+            // Object
+            if (Math.abs(do_px - FOCAL_LENGTH) <= eps) objPos = "F 上";
+            else if (Math.abs(do_px - 2*FOCAL_LENGTH) <= eps) objPos = "2F 上";
+            else if (do_px < FOCAL_LENGTH) objPos = "F 內";
+            else if (do_px > FOCAL_LENGTH && do_px < 2*FOCAL_LENGTH) objPos = "F 與 2F 間";
+            else objPos = "2F 外";
+
+            // Image
+            if (lens === 'convex') {
+                if (Math.abs(do_px - FOCAL_LENGTH) <= eps) {
+                    imgPos = "無窮遠";
+                } else if (di_px > 0 && isFinite(di_px)) {
+                    if (Math.abs(di_px - 2*FOCAL_LENGTH) <= eps) imgPos = "異側 2F 上";
+                    else if (di_px > 2*FOCAL_LENGTH) imgPos = "異側 2F 外";
+                    else if (di_px > FOCAL_LENGTH && di_px < 2*FOCAL_LENGTH) imgPos = "異側 F 與 2F 間";
+                    else imgPos = "異側 F 內"; // Usually impossible for real object, but fallback
+                } else {
+                    imgPos = "同側 (鏡前)";
+                }
+            } else {
+                imgPos = "同側 F 內";
+            }
+            return { objPos, imgPos };
+        }
+
+        // --- Drawing Helpers ---
+        function drawEntity(ctx, x, cy, m, opacity) {
+            if(opacity <= 0) return;
+            ctx.save();
+            ctx.translate(x, cy); 
+            ctx.scale(1, m);
+            ctx.globalAlpha = opacity;
+
+            if (uploadedImage) {
+                const imgWidth = objectHeight * imgAspectRatio;
+                ctx.drawImage(uploadedImage, -imgWidth/2, -objectHeight, imgWidth, objectHeight);
+            } else {
+                // Default Arrow
+                ctx.beginPath();
+                ctx.moveTo(0, 0);
+                ctx.lineTo(0, -objectHeight);
+                ctx.lineTo(-8, -objectHeight + 15);
+                ctx.moveTo(0, -objectHeight);
+                ctx.lineTo(8, -objectHeight + 15);
+                ctx.strokeStyle = opacity === 1 ? '#0284c7' : '#0284c7'; 
+                ctx.lineWidth = 6;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                ctx.stroke();
+            }
+            ctx.restore();
+        }
+
+        function extendForward(p1, passThru) {
+            const dx = passThru.x - p1.x;
+            const dy = passThru.y - p1.y;
+            const dist = Math.hypot(dx, dy);
+            if(dist === 0) return p1;
+            const mult = 2000 / dist; // Extend far off-screen
+            return {x: passThru.x + dx * mult, y: passThru.y + dy * mult};
+        }
+
+        function extendBackward(p1, passThru) {
+            const dx = p1.x - passThru.x;
+            const dy = p1.y - passThru.y;
+            const dist = Math.hypot(dx, dy);
+            if(dist === 0) return p1;
+            const mult = 2000 / dist;
+            return {x: p1.x + dx * mult, y: p1.y + dy * mult};
+        }
+
+        // Animates drawing a polyline. progress is 0.0 to 1.0
+        function drawAnimatedPath(ctx, path, progress, color, isDashed, width=2) {
+            if (progress <= 0 || path.length < 2) return;
+            
+            let lengths = [];
+            let totalLen = 0;
+            for (let i = 0; i < path.length - 1; i++) {
+                let d = Math.hypot(path[i+1].x - path[i].x, path[i+1].y - path[i].y);
+                lengths.push(d);
+                totalLen += d;
+            }
+            
+            let targetLen = totalLen * Math.min(progress, 1);
+            
+            ctx.beginPath();
+            ctx.moveTo(path[0].x, path[0].y);
+            ctx.strokeStyle = color;
+            ctx.lineWidth = width;
+            ctx.setLineDash(isDashed ? [6, 6] : []);
+            
+            let currentLen = 0;
+            for (let i = 0; i < path.length - 1; i++) {
+                if (currentLen + lengths[i] <= targetLen) {
+                    ctx.lineTo(path[i+1].x, path[i+1].y);
+                    currentLen += lengths[i];
+                } else {
+                    let ratio = (targetLen - currentLen) / lengths[i];
+                    let px = path[i].x + (path[i+1].x - path[i].x) * ratio;
+                    let py = path[i].y + (path[i+1].y - path[i].y) * ratio;
+                    ctx.lineTo(px, py);
+                    break;
+                }
+            }
+            ctx.stroke();
+            ctx.setLineDash([]); // Reset
+        }
+
+        // --- Main Frame Render ---
+        function drawFrame() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            const cx = canvas.width / 2;
+            const cy = canvas.height / 2 + 30; // Center offset
+
+            const optics = calculateOptics();
+            const texts = getPositionTexts(do_px, optics.di, lensType);
+
+            // 1. Draw Principal Axis
+            ctx.beginPath();
+            ctx.moveTo(0, cy);
+            ctx.lineTo(canvas.width, cy);
+            ctx.strokeStyle = '#cbd5e1'; 
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            // 2. Draw Focal Points
+            ctx.fillStyle = '#64748b';
+            ctx.font = 'bold 14px Inter';
+            ctx.textAlign = 'center';
+            const marks = [
+                { x: cx - FOCAL_LENGTH, label: 'F' },
+                { x: cx - FOCAL_LENGTH*2, label: '2F' },
+                { x: cx + FOCAL_LENGTH, label: 'F' },
+                { x: cx + FOCAL_LENGTH*2, label: '2F' }
+            ];
+            marks.forEach(m => {
+                ctx.beginPath();
+                ctx.arc(m.x, cy, 4, 0, Math.PI*2);
+                ctx.fill();
+                ctx.fillText(m.label, m.x, cy + 22);
+            });
+
+            // 3. Draw Lens Shape
+            ctx.save();
+            ctx.translate(cx, cy);
+            ctx.fillStyle = 'rgba(186, 230, 253, 0.5)'; // sky-200
+            ctx.strokeStyle = '#0284c7'; // sky-600
+            ctx.lineWidth = 2;
+            const lensHeight = 300;
+            const curve = 25;
+            ctx.beginPath();
+            if (lensType === 'convex') {
+                ctx.moveTo(0, -lensHeight/2);
+                ctx.quadraticCurveTo(curve, 0, 0, lensHeight/2);
+                ctx.quadraticCurveTo(-curve, 0, 0, -lensHeight/2);
+            } else {
+                const cW = 40; // 增加凹透鏡的寬度
+                const cCtrl = 10; // 控制點向內縮，使凹陷更深
+                ctx.moveTo(-cW/2, -lensHeight/2);
+                ctx.lineTo(cW/2, -lensHeight/2);
+                ctx.quadraticCurveTo(cCtrl, 0, cW/2, lensHeight/2);
+                ctx.lineTo(-cW/2, lensHeight/2);
+                ctx.quadraticCurveTo(-cCtrl, 0, -cW/2, -lensHeight/2);
+            }
+            ctx.fill();
+            ctx.stroke();
+            
+            // Optical center axis
+            ctx.beginPath();
+            ctx.moveTo(0, -lensHeight/2);
+            ctx.lineTo(0, lensHeight/2);
+            ctx.setLineDash([4, 4]);
+            ctx.strokeStyle = 'rgba(0,0,0,0.2)';
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.restore();
+
+            // 4. Draw Object
+            if (!isInfinity) {
+                drawEntity(ctx, cx - do_px, cy, 1, 1);
+                ctx.fillStyle = '#1e293b';
+                ctx.fillText("物體", cx - do_px, cy + 40);
+            }
+
+            // 5. Draw Animated Rays & 6. Draw Image
+            const colorRay1 = '#f59e0b'; // amber-500
+            const colorRay2 = '#10b981'; // emerald-500
+            let pRay1 = Math.max(0, Math.min(1, animTime - 0.0));
+            let pRay2 = Math.max(0, Math.min(1, animTime - 1.0));
+
+            if (isInfinity) {
+                // INFINITY MODE: Parallel incoming rays
+                const h = 50; // Distance of parallel rays from principal axis
+                const p_top_start = {x: 0, y: cy - h};
+                const p_top_lens = {x: cx, y: cy - h};
+                const p_bot_start = {x: 0, y: cy + h};
+                const p_bot_lens = {x: cx, y: cy + h};
+
+                let f_pt = {x: cx + FOCAL_LENGTH, y: cy};
+                let vf_pt = {x: cx - FOCAL_LENGTH, y: cy};
+
+                let ray1_solid, ray1_dashed, ray2_solid, ray2_dashed;
+
+                if (lensType === 'convex') {
+                    let r_top_fwd = extendForward(p_top_lens, f_pt);
+                    ray1_solid = [p_top_start, p_top_lens, r_top_fwd];
+                    ray1_dashed = [];
+
+                    let r_bot_fwd = extendForward(p_bot_lens, f_pt);
+                    ray2_solid = [p_bot_start, p_bot_lens, r_bot_fwd];
+                    ray2_dashed = [];
+                } else {
+                    let r_top_fwd = extendForward(vf_pt, p_top_lens);
+                    ray1_solid = [p_top_start, p_top_lens, r_top_fwd];
+                    ray1_dashed = [p_top_lens, vf_pt];
+
+                    let r_bot_fwd = extendForward(vf_pt, p_bot_lens);
+                ray2_solid = [p_bot_start, p_bot_lens, r_bot_fwd];
+                ray2_dashed = [p_bot_lens, vf_pt];
+            }
+
+            drawAnimatedPath(ctx, ray1_solid, pRay1, colorRay1, false);
+            if(ray1_dashed.length) drawAnimatedPath(ctx, ray1_dashed, pRay1, colorRay1, true);
+            
+            drawAnimatedPath(ctx, ray2_solid, pRay2, colorRay1, false);
+            if(ray2_dashed.length) drawAnimatedPath(ctx, ray2_dashed, pRay2, colorRay1, true);
+
+            if (animState === 'ANIMATING') {
+                ctx.font = 'bold 16px Inter';
+                ctx.textAlign = 'center';
+                if (animTime > 0 && animTime <= 1.2) {
+                    ctx.fillStyle = colorRay1;
+                    ctx.fillText("平行光射入", cx - FOCAL_LENGTH, cy - h - 20);
+                } else if (animTime > 1.0 && animTime <= 2.2) {
+                    ctx.fillStyle = colorRay1;
+                    ctx.fillText(lensType === 'convex' ? "匯聚於焦點" : "發散，延長線交於焦點", cx + (lensType === 'convex' ? FOCAL_LENGTH : -FOCAL_LENGTH), cy - h - 20);
+                }
+            }
+
+            // Image at Infinity mode (Dot at F)
+                let imgFade = Math.max(0, Math.min(1, animTime - 2.0));
+                let isReal = lensType === 'convex';
+                let currentOpacity = imgFade * (isReal ? 1.0 : 0.5);
+                
+                if (currentOpacity > 0) {
+                    ctx.globalAlpha = currentOpacity;
+                    ctx.beginPath();
+                    let dotX = isReal ? cx + FOCAL_LENGTH : cx - FOCAL_LENGTH;
+                    ctx.arc(dotX, cy, 6, 0, Math.PI*2);
+                    ctx.fillStyle = isReal ? '#e11d48' : '#9333ea';
+                    ctx.fill();
+                    ctx.globalAlpha = 1.0;
+                    if (currentOpacity > 0.1) {
+                        ctx.font = 'bold 14px Inter';
+                        ctx.textAlign = 'center';
+                        ctx.fillStyle = isReal ? '#e11d48' : '#9333ea';
+                        ctx.fillText(isReal ? "實像 (點)" : "虛像 (點)", dotX, cy + 25);
+                    }
+                }
+
+            } else {
+                // NORMAL MODE
+                const p_obj = {x: cx - do_px, y: cy - objectHeight};
+                const p_l1 = {x: cx, y: cy - objectHeight};
+                const p_c = {x: cx, y: cy};
+                const p_img = {x: cx + optics.di, y: cy - objectHeight * optics.m};
+                
+                let r1_fwd_pt;
+                if (lensType === 'convex') r1_fwd_pt = extendForward(p_l1, {x: cx + FOCAL_LENGTH, y: cy});
+                else r1_fwd_pt = extendForward({x: cx - FOCAL_LENGTH, y: cy}, p_l1);
+
+                const ray1_solid = [p_obj, p_l1, r1_fwd_pt];
+                const ray1_dashed = (optics.di < 0 && isFinite(optics.di)) ? [p_l1, p_img] : [];
+
+                const r2_fwd_pt = extendForward(p_obj, p_c);
+                const ray2_solid = [p_obj, p_c, r2_fwd_pt];
+                const ray2_dashed = (optics.di < 0 && isFinite(optics.di)) ? [p_c, p_img] : [];
+                
+                // Draw Rays regardless of image formation
+                drawAnimatedPath(ctx, ray1_solid, pRay1, colorRay1, false);
+                if(ray1_dashed.length) drawAnimatedPath(ctx, ray1_dashed, pRay1, colorRay1, true);
+                
+                drawAnimatedPath(ctx, ray2_solid, pRay2, colorRay2, false);
+                if(ray2_dashed.length) drawAnimatedPath(ctx, ray2_dashed, pRay2, colorRay2, true);
+                
+                ctx.font = 'bold 16px Inter';
+                ctx.textAlign = 'center';
+                if (animState === 'ANIMATING') {
+                    if (animTime > 0 && animTime <= 1.2) {
+                        ctx.fillStyle = colorRay1;
+                        ctx.fillText("平行光通過焦點", cx, cy - lensHeight/2 - 20);
+                    } else if (animTime > 1.0 && animTime <= 2.2) {
+                        ctx.fillStyle = colorRay2;
+                        // Move text lower so it doesn't clash as easily
+                        ctx.fillText("通過鏡心不偏折", cx, cy + lensHeight/2 + 20); 
+                    }
+                }
+
+                // Draw Image if finite
+                if (isFinite(optics.di) && Math.abs(optics.di) < 10000) {
+                    let imgFade = Math.max(0, Math.min(1, animTime - 2.0));
+                    let isReal = optics.di > 0;
+                    let maxOpacity = isReal ? 1.0 : 0.5; 
+                    let currentOpacity = imgFade * maxOpacity;
+                    
+                    drawEntity(ctx, cx + optics.di, cy, optics.m, currentOpacity);
+                    
+                    if (currentOpacity > 0.1) {
+                        ctx.fillStyle = isReal ? '#e11d48' : '#9333ea';
+                        ctx.font = 'bold 14px Inter';
+                        ctx.textAlign = 'center';
+                        ctx.fillText(isReal ? "實像" : "虛像", cx + optics.di, cy + (optics.m > 0 ? 40 : -15));
+                    }
+                }
+            }
+
+            // 7. Update UI Text DOM elements
+            document.getElementById('stat-obj-pos').innerText = texts.objPos;
+            document.getElementById('stat-img-pos').innerText = texts.imgPos;
+            
+            if (isInfinity) {
+                updateStatusPills(optics.f > 0, "x", "一點");
+            } else {
+                if (Math.abs(optics.di) > 10000 || !isFinite(optics.di)) {
+                    updateStatusPills(null, null, null);
+                } else {
+                    let isReal = optics.di > 0;
+                    let isUpright = optics.m > 0;
+                    let magValue = Math.abs(optics.m);
+                    let magState = (magValue > 1.05) ? "放大" : (magValue < 0.95 ? "縮小" : "相等");
+                    
+                    updateStatusPills(isReal, isUpright, magState);
+                }
+            }
+        }
+
+        function updateStatusPills(isReal, isUpright, magState) {
+            const elReal = document.getElementById('stat-real');
+            const elErect = document.getElementById('stat-erect');
+            const elMag = document.getElementById('stat-mag');
+
+            if (isReal === null) {
+                elReal.className = "hidden";
+                elErect.className = "hidden";
+                elMag.innerText = "無法成像";
+                elMag.className = "px-2 py-0.5 rounded text-xs font-bold bg-gray-200 text-gray-700";
+                return;
+            }
+
+            elReal.className = `px-2 py-0.5 rounded text-xs font-bold ${isReal ? 'bg-rose-100 text-rose-700' : 'bg-purple-100 text-purple-700'}`;
+            elReal.innerText = isReal ? "實像" : "虛像";
+            
+            if (isUpright === null) {
+                elErect.className = "hidden";
+            } else if (isUpright === "x") {
+                elErect.className = "px-2 py-0.5 rounded text-xs font-bold bg-gray-200 text-gray-700";
+                elErect.innerText = "x";
+            } else {
+                elErect.className = `px-2 py-0.5 rounded text-xs font-bold ${isUpright ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`;
+                elErect.innerText = isUpright ? "正立" : "倒立";
+            }
+            
+            elMag.className = "px-2 py-0.5 rounded text-xs font-bold bg-indigo-100 text-indigo-700";
+            elMag.innerText = magState;
+        }
+
+        // --- Animation Loop ---
+        function loop() {
+            if (animState === 'ANIMATING') {
+                animTime += ANIM_SPEED;
+                if (animTime >= 3.0) {
+                    animTime = 3.0;
+                    animState = 'DONE';
+                }
+                drawFrame();
+            } else if (animState === 'DRAGGING') {
+                drawFrame();
+            }
+            requestAnimationFrame(loop);
+        }
+
+        // Initialize
+        resize();
+        triggerAnimation();
+        requestAnimationFrame(loop);
+
+    </script>
+</body>
+</html>
